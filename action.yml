@@ -1,0 +1,177 @@
+name: Create Release PR
+description: Create a release PR from source branch to target branch with version bump and CHANGELOG
+
+inputs:
+  source-branch:
+    description: Source branch to create release from
+    required: false
+    default: develop
+  target-branch:
+    description: Target branch for the release PR
+    required: false
+    default: main
+  github-token:
+    description: GitHub token for creating PR
+    required: true
+
+outputs:
+  version:
+    description: New version number
+    value: ${{ steps.version.outputs.version }}
+  pr-number:
+    description: Created PR number
+    value: ${{ steps.create-pr.outputs.pr-number }}
+  pr-url:
+    description: Created PR URL
+    value: ${{ steps.create-pr.outputs.pr-url }}
+
+runs:
+  using: composite
+  steps:
+    - name: Setup Git
+      shell: bash
+      run: |
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+
+    - name: Fetch all tags
+      shell: bash
+      run: git fetch --tags
+
+    - name: Determine version bump
+      id: version
+      shell: bash
+      run: |
+        # Get last tag
+        LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+        echo "Last tag: $LAST_TAG"
+
+        # Parse current version
+        CURRENT_VERSION=${LAST_TAG#v}
+        IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_VERSION"
+
+        # Analyze commits for version bump type
+        COMMITS=$(git log ${LAST_TAG}..HEAD --oneline 2>/dev/null || git log HEAD --oneline)
+
+        if echo "$COMMITS" | grep -qE "(feat|fix)(\(.+\))?!:|BREAKING CHANGE:"; then
+          BUMP="major"
+          MAJOR=$((MAJOR + 1))
+          MINOR=0
+          PATCH=0
+        elif echo "$COMMITS" | grep -qE "^[a-f0-9]+ feat(\(.+\))?:"; then
+          BUMP="minor"
+          MINOR=$((MINOR + 1))
+          PATCH=0
+        else
+          BUMP="patch"
+          PATCH=$((PATCH + 1))
+        fi
+
+        NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
+        echo "Version bump: $BUMP ($CURRENT_VERSION -> $NEW_VERSION)"
+        echo "version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+        echo "bump=$BUMP" >> "$GITHUB_OUTPUT"
+
+    - name: Create release branch
+      id: branch
+      shell: bash
+      run: |
+        TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+        BRANCH_NAME="release/${TIMESTAMP}"
+        git checkout -b "$BRANCH_NAME"
+        echo "branch=$BRANCH_NAME" >> "$GITHUB_OUTPUT"
+
+    - name: Install git-cliff
+      shell: bash
+      run: |
+        if ! command -v git-cliff &> /dev/null; then
+          cargo install git-cliff --locked || {
+            # Fallback: download pre-built binary
+            curl -sSL https://github.com/orhun/git-cliff/releases/latest/download/git-cliff-x86_64-unknown-linux-gnu.tar.gz | tar xz
+            sudo mv git-cliff /usr/local/bin/
+          }
+        fi
+
+    - name: Update CHANGELOG
+      shell: bash
+      run: |
+        VERSION="${{ steps.version.outputs.version }}"
+        if [ -f cliff.toml ]; then
+          git-cliff --tag "v${VERSION}" -o CHANGELOG.md
+        else
+          # Fallback: simple changelog generation
+          echo "# Changelog" > CHANGELOG.md
+          echo "" >> CHANGELOG.md
+          echo "## v${VERSION}" >> CHANGELOG.md
+          echo "" >> CHANGELOG.md
+          git log $(git describe --tags --abbrev=0 2>/dev/null || echo "")..HEAD --pretty=format:"- %s" >> CHANGELOG.md
+          echo "" >> CHANGELOG.md
+        fi
+
+    - name: Update Cargo.toml version
+      shell: bash
+      run: |
+        VERSION="${{ steps.version.outputs.version }}"
+        if [ -f Cargo.toml ]; then
+          # Update workspace version
+          sed -i "s/^version = \"[^\"]*\"/version = \"${VERSION}\"/" Cargo.toml
+        fi
+
+    - name: Update package.json version
+      shell: bash
+      run: |
+        VERSION="${{ steps.version.outputs.version }}"
+        if [ -f package.json ]; then
+          # Use jq if available, otherwise sed
+          if command -v jq &> /dev/null; then
+            jq ".version = \"${VERSION}\"" package.json > package.json.tmp && mv package.json.tmp package.json
+          else
+            sed -i "s/\"version\": \"[^\"]*\"/\"version\": \"${VERSION}\"/" package.json
+          fi
+        fi
+
+    - name: Commit and push changes
+      shell: bash
+      run: |
+        VERSION="${{ steps.version.outputs.version }}"
+        BRANCH="${{ steps.branch.outputs.branch }}"
+
+        git add -A
+        git commit -m "chore(release): v${VERSION}
+
+        - Update version to ${VERSION}
+        - Update CHANGELOG.md"
+
+        git push origin "$BRANCH"
+
+    - name: Create Pull Request
+      id: create-pr
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+      run: |
+        VERSION="${{ steps.version.outputs.version }}"
+        BRANCH="${{ steps.branch.outputs.branch }}"
+        TARGET="${{ inputs.target-branch }}"
+
+        PR_URL=$(gh pr create \
+          --base "$TARGET" \
+          --head "$BRANCH" \
+          --title "chore(release): v${VERSION}" \
+          --body "## Release v${VERSION}
+
+        This PR was automatically created by the release workflow.
+
+        ### Changes
+        See CHANGELOG.md for details.
+
+        ### Checklist
+        - [ ] Version bumped correctly
+        - [ ] CHANGELOG updated
+        - [ ] All CI checks pass")
+
+        PR_NUMBER=$(echo "$PR_URL" | grep -oE '[0-9]+$')
+
+        echo "pr-url=$PR_URL" >> "$GITHUB_OUTPUT"
+        echo "pr-number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+        echo "Created PR #$PR_NUMBER: $PR_URL"
