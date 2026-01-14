@@ -108,26 +108,150 @@ runs:
           echo "" >> CHANGELOG.md
         fi
 
-    - name: Update Cargo.toml version
+    - name: Update Cargo.toml version (Rust)
       shell: bash
       run: |
         VERSION="${{ steps.version.outputs.version }}"
         if [ -f Cargo.toml ]; then
-          # Update workspace version
+          echo "Updating Cargo.toml to version ${VERSION}"
           sed -i "s/^version = \"[^\"]*\"/version = \"${VERSION}\"/" Cargo.toml
         fi
 
-    - name: Update package.json version
+    - name: Update package.json version (Node.js/npm)
       shell: bash
       run: |
         VERSION="${{ steps.version.outputs.version }}"
         if [ -f package.json ]; then
-          # Use jq if available, otherwise sed
+          echo "Updating package.json to version ${VERSION}"
           if command -v jq &> /dev/null; then
             jq ".version = \"${VERSION}\"" package.json > package.json.tmp && mv package.json.tmp package.json
           else
             sed -i "s/\"version\": \"[^\"]*\"/\"version\": \"${VERSION}\"/" package.json
           fi
+        fi
+
+    - name: Update pyproject.toml version (Python)
+      shell: bash
+      run: |
+        VERSION="${{ steps.version.outputs.version }}"
+        if [ -f pyproject.toml ]; then
+          echo "Updating pyproject.toml to version ${VERSION}"
+          # Handle both [project] and [tool.poetry] sections
+          sed -i "s/^version = \"[^\"]*\"/version = \"${VERSION}\"/" pyproject.toml
+        fi
+
+    - name: Update setup.py version (Python legacy)
+      shell: bash
+      run: |
+        VERSION="${{ steps.version.outputs.version }}"
+        if [ -f setup.py ]; then
+          echo "Updating setup.py to version ${VERSION}"
+          sed -i "s/version=['\"][^'\"]*['\"]/version='${VERSION}'/" setup.py
+        fi
+
+    - name: Update composer.json version (PHP)
+      shell: bash
+      run: |
+        VERSION="${{ steps.version.outputs.version }}"
+        if [ -f composer.json ]; then
+          echo "Updating composer.json to version ${VERSION}"
+          if command -v jq &> /dev/null; then
+            jq ".version = \"${VERSION}\"" composer.json > composer.json.tmp && mv composer.json.tmp composer.json
+          else
+            sed -i "s/\"version\": \"[^\"]*\"/\"version\": \"${VERSION}\"/" composer.json
+          fi
+        fi
+
+    - name: Update pubspec.yaml version (Dart/Flutter)
+      shell: bash
+      run: |
+        VERSION="${{ steps.version.outputs.version }}"
+        if [ -f pubspec.yaml ]; then
+          echo "Updating pubspec.yaml to version ${VERSION}"
+          sed -i "s/^version: .*/version: ${VERSION}/" pubspec.yaml
+        fi
+
+    - name: Update version.rb (Ruby)
+      shell: bash
+      run: |
+        VERSION="${{ steps.version.outputs.version }}"
+        # Find and update version.rb files
+        for file in $(find . -name "version.rb" -type f 2>/dev/null | head -5); do
+          echo "Updating ${file} to version ${VERSION}"
+          sed -i "s/VERSION = ['\"][^'\"]*['\"]/VERSION = '${VERSION}'/" "$file"
+        done
+
+    - name: Update gemspec version (Ruby)
+      shell: bash
+      run: |
+        VERSION="${{ steps.version.outputs.version }}"
+        for file in *.gemspec; do
+          if [ -f "$file" ]; then
+            echo "Updating ${file} to version ${VERSION}"
+            sed -i "s/\.version\s*=\s*['\"][^'\"]*['\"]/.version = '${VERSION}'/" "$file"
+          fi
+        done
+
+    - name: Update pom.xml version (Java/Maven)
+      shell: bash
+      run: |
+        VERSION="${{ steps.version.outputs.version }}"
+        if [ -f pom.xml ]; then
+          echo "Updating pom.xml to version ${VERSION}"
+          # Update only the project version, not dependency versions
+          sed -i "0,/<version>[^<]*<\/version>/s/<version>[^<]*<\/version>/<version>${VERSION}<\/version>/" pom.xml
+        fi
+
+    - name: Update build.gradle version (Gradle)
+      shell: bash
+      run: |
+        VERSION="${{ steps.version.outputs.version }}"
+        if [ -f build.gradle ]; then
+          echo "Updating build.gradle to version ${VERSION}"
+          sed -i "s/version = ['\"][^'\"]*['\"]/version = '${VERSION}'/" build.gradle
+        fi
+        if [ -f build.gradle.kts ]; then
+          echo "Updating build.gradle.kts to version ${VERSION}"
+          sed -i "s/version = \"[^\"]*\"/version = \"${VERSION}\"/" build.gradle.kts
+        fi
+
+    - name: Update Package.swift version (Swift)
+      shell: bash
+      run: |
+        VERSION="${{ steps.version.outputs.version }}"
+        if [ -f Package.swift ]; then
+          echo "Updating Package.swift to version ${VERSION}"
+          # Update version in package definition if present
+          sed -i "s/version: \"[^\"]*\"/version: \"${VERSION}\"/" Package.swift
+        fi
+
+    - name: Update .csproj version (.NET/C#)
+      shell: bash
+      run: |
+        VERSION="${{ steps.version.outputs.version }}"
+        # Update Directory.Build.props if exists (central version management)
+        if [ -f Directory.Build.props ]; then
+          echo "Updating Directory.Build.props to version ${VERSION}"
+          sed -i "s/<Version>[^<]*<\/Version>/<Version>${VERSION}<\/Version>/" Directory.Build.props
+          sed -i "s/<PackageVersion>[^<]*<\/PackageVersion>/<PackageVersion>${VERSION}<\/PackageVersion>/" Directory.Build.props
+        fi
+        # Update individual .csproj files
+        for file in *.csproj; do
+          if [ -f "$file" ]; then
+            echo "Updating ${file} to version ${VERSION}"
+            sed -i "s/<Version>[^<]*<\/Version>/<Version>${VERSION}<\/Version>/" "$file"
+            sed -i "s/<PackageVersion>[^<]*<\/PackageVersion>/<PackageVersion>${VERSION}<\/PackageVersion>/" "$file"
+          fi
+        done
+
+    - name: Update Chart.yaml version (Helm)
+      shell: bash
+      run: |
+        VERSION="${{ steps.version.outputs.version }}"
+        if [ -f Chart.yaml ]; then
+          echo "Updating Chart.yaml to version ${VERSION}"
+          sed -i "s/^version: .*/version: ${VERSION}/" Chart.yaml
+          sed -i "s/^appVersion: .*/appVersion: \"${VERSION}\"/" Chart.yaml
         fi
 
     - name: Commit and push changes
