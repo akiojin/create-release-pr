@@ -42,16 +42,39 @@ runs:
       id: version
       shell: bash
       run: |
-        # Get last tag
-        LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
-        echo "Last tag: $LAST_TAG"
+        # Get last tag that matches v*.*.* pattern (semantic versioning)
+        # Filter tags to only those starting with 'v' followed by a digit
+        LAST_TAG=$(git tag --list 'v[0-9]*' --sort=-v:refname | head -n1)
+        
+        if [ -z "$LAST_TAG" ]; then
+          LAST_TAG="v0.0.0"
+          echo "No matching tags found, using default: $LAST_TAG"
+        else
+          echo "Last tag: $LAST_TAG"
+        fi
 
-        # Parse current version
+        # Parse current version (remove 'v' prefix)
         CURRENT_VERSION=${LAST_TAG#v}
-        IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_VERSION"
+        
+        # Extract major, minor, patch using regex for robustness
+        if [[ "$CURRENT_VERSION" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+) ]]; then
+          MAJOR="${BASH_REMATCH[1]}"
+          MINOR="${BASH_REMATCH[2]}"
+          PATCH="${BASH_REMATCH[3]}"
+        else
+          echo "Warning: Could not parse version '$CURRENT_VERSION', using 0.0.0"
+          MAJOR=0
+          MINOR=0
+          PATCH=0
+        fi
+        
+        echo "Current version: $MAJOR.$MINOR.$PATCH"
 
         # Analyze commits for version bump type
         COMMITS=$(git log ${LAST_TAG}..HEAD --oneline 2>/dev/null || git log HEAD --oneline)
+        
+        echo "Commits since $LAST_TAG:"
+        echo "$COMMITS" | head -10
 
         if echo "$COMMITS" | grep -qE "(feat|fix)(\(.+\))?!:|BREAKING CHANGE:"; then
           BUMP="major"
@@ -104,7 +127,7 @@ runs:
           echo "" >> CHANGELOG.md
           echo "## v${VERSION}" >> CHANGELOG.md
           echo "" >> CHANGELOG.md
-          git log $(git describe --tags --abbrev=0 2>/dev/null || echo "")..HEAD --pretty=format:"- %s" >> CHANGELOG.md
+          git log $(git tag --list 'v[0-9]*' --sort=-v:refname | head -n1)..HEAD --pretty=format:"- %s" >> CHANGELOG.md
           echo "" >> CHANGELOG.md
         fi
 
