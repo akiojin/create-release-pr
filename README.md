@@ -9,9 +9,29 @@ A GitHub Action to create release PRs with automatic version bump, CHANGELOG gen
   - `feat:` → minor
   - `fix:` → patch
 - CHANGELOG generation using git-cliff
-- Automatic updates to `Cargo.toml` and `package.json`
+- Automatic version updates for multiple package managers
 - Creates release branch (`release/YYYYMMDD-HHMMSS`)
 - Creates PR to target branch
+
+## Supported Version Files
+
+This action automatically detects and updates version files for the following ecosystems:
+
+| Ecosystem | File(s) |
+|-----------|---------|
+| **Rust** | `Cargo.toml` |
+| **Node.js/npm** | `package.json` |
+| **Python** | `pyproject.toml`, `setup.py` |
+| **PHP** | `composer.json` |
+| **Dart/Flutter** | `pubspec.yaml` |
+| **Ruby** | `version.rb`, `*.gemspec` |
+| **Java (Maven)** | `pom.xml` |
+| **Java/Kotlin (Gradle)** | `build.gradle`, `build.gradle.kts` |
+| **Swift** | `Package.swift` |
+| **.NET/C#** | `Directory.Build.props`, `*.csproj` |
+| **Helm** | `Chart.yaml` |
+
+Files are only updated if they exist in the repository.
 
 ## Usage
 
@@ -45,7 +65,7 @@ jobs:
 ## Inputs
 
 | Name | Description | Required | Default |
-|------|-------------|----------|-------|
+|------|-------------|----------|---------|
 | `source-branch` | Source branch to create release from | No | `develop` |
 | `target-branch` | Target branch for the release PR | No | `main` |
 | `github-token` | GitHub token for creating PR | Yes | - |
@@ -63,6 +83,27 @@ jobs:
 For customized CHANGELOG generation, create a `cliff.toml` in your repository root. See [git-cliff documentation](https://git-cliff.org/docs/configuration) for details.
 
 If no `cliff.toml` is found, a simple fallback changelog format is used.
+
+## Release Flow
+
+```
+workflow_dispatch trigger
+        ↓
+Checkout source branch (e.g., develop)
+        ↓
+Analyze Conventional Commits → Determine version bump
+        ↓
+Create release/YYYYMMDD-HHMMSS branch
+        ↓
+Update version files (Cargo.toml, package.json, etc.)
+Update CHANGELOG.md (git-cliff)
+        ↓
+Commit & Push to release branch
+        ↓
+Create PR to target branch (e.g., main)
+        ↓
+PR merge triggers your release workflow
+```
 
 ## License
 
