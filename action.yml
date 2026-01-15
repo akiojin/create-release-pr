@@ -34,9 +34,21 @@ runs:
         git config user.name "github-actions[bot]"
         git config user.email "github-actions[bot]@users.noreply.github.com"
 
-    - name: Fetch all tags
+    - name: Fetch all branches and tags
       shell: bash
-      run: git fetch --tags
+      run: |
+        git fetch --tags
+        git fetch origin ${{ inputs.target-branch }}
+
+    - name: Merge target branch into source
+      shell: bash
+      run: |
+        # Merge target branch (e.g., main) into source branch (e.g., develop)
+        # This ensures CHANGELOG and version files are up-to-date with the latest release
+        echo "Merging ${{ inputs.target-branch }} into current branch to sync release artifacts..."
+        git merge origin/${{ inputs.target-branch }} --no-edit -X ours || {
+          echo "::warning::Merge had conflicts, resolved using 'ours' strategy"
+        }
 
     - name: Determine version bump
       id: version
@@ -44,45 +56,45 @@ runs:
       run: |
         # SemVer regex pattern (strict)
         SEMVER_REGEX="^([0-9]+)\.([0-9]+)\.([0-9]+)(-([0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*))?(\+([0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*))?$"
-        
+
         # Get last tag that matches v*.*.* pattern (semantic versioning)
         # Filter tags to only those starting with 'v' followed by a digit
         LAST_TAG=$(git tag --list 'v[0-9]*' --sort=-v:refname | head -n1)
-        
+
         if [ -z "$LAST_TAG" ]; then
           echo "::error::No semantic version tags found (expected format: v*.*.*, e.g., v1.0.0)"
           echo "::error::Please create an initial tag with: git tag v0.0.0 && git push origin v0.0.0"
           exit 1
         fi
-        
+
         echo "Last tag: $LAST_TAG"
 
         # Parse current version (remove 'v' prefix)
         CURRENT_VERSION=${LAST_TAG#v}
-        
+
         # Validate SemVer format
         if [[ ! "$CURRENT_VERSION" =~ $SEMVER_REGEX ]]; then
           echo "::error::Tag '$LAST_TAG' is not a valid semantic version"
           echo "::error::Expected format: vMAJOR.MINOR.PATCH (e.g., v1.0.0, v2.1.3)"
           exit 1
         fi
-        
+
         # Extract major, minor, patch
         MAJOR="${BASH_REMATCH[1]}"
         MINOR="${BASH_REMATCH[2]}"
         PATCH="${BASH_REMATCH[3]}"
-        
+
         echo "Current version: $MAJOR.$MINOR.$PATCH"
 
         # Analyze commits for version bump type
         COMMITS=$(git log ${LAST_TAG}..HEAD --oneline 2>/dev/null || git log HEAD --oneline)
-        
+
         if [ -z "$COMMITS" ]; then
           echo "::error::No commits found since $LAST_TAG"
           echo "::error::Nothing to release"
           exit 1
         fi
-        
+
         echo "Commits since $LAST_TAG:"
         echo "$COMMITS" | head -10
 
@@ -101,13 +113,13 @@ runs:
         fi
 
         NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
-        
+
         # Validate new version is also SemVer (sanity check)
         if [[ ! "$NEW_VERSION" =~ $SEMVER_REGEX ]]; then
           echo "::error::Generated version '$NEW_VERSION' is not valid SemVer (this is a bug)"
           exit 1
         fi
-        
+
         echo "Version bump: $BUMP ($CURRENT_VERSION -> $NEW_VERSION)"
         echo "version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
         echo "bump=$BUMP" >> "$GITHUB_OUTPUT"
