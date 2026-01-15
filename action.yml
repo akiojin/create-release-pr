@@ -43,8 +43,6 @@ runs:
     - name: Merge target branch into source
       shell: bash
       run: |
-        # Merge target branch (e.g., main) into source branch (e.g., develop)
-        # This ensures CHANGELOG and version files are up-to-date with the latest release
         echo "Merging ${{ inputs.target-branch }} into current branch to sync release artifacts..."
         git merge origin/${{ inputs.target-branch }} --no-edit -X ours || {
           echo "::warning::Merge had conflicts, resolved using 'ours' strategy"
@@ -54,10 +52,8 @@ runs:
       id: version
       shell: bash
       run: |
-        # SemVer regex pattern (strict)
         SEMVER_REGEX="^([0-9]+)\.([0-9]+)\.([0-9]+)(-([0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*))?(\+([0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*))?$"
 
-        # Get last tag
         LAST_TAG=$(git tag --list 'v[0-9]*' --sort=-v:refname | head -n1)
 
         if [ -z "$LAST_TAG" ]; then
@@ -67,7 +63,6 @@ runs:
 
         echo "Last tag: $LAST_TAG"
 
-        # Parse current version
         CURRENT_VERSION=${LAST_TAG#v}
 
         if [[ ! "$CURRENT_VERSION" =~ $SEMVER_REGEX ]]; then
@@ -81,26 +76,33 @@ runs:
 
         echo "Current version: $MAJOR.$MINOR.$PATCH"
 
-        # Get commits for version calculation
-        # Use first-parent to follow the main development line
-        # Exclude merge commits and sync commits which don't represent actual changes
-        COMMITS=$(git log origin/${{ inputs.target-branch }}..HEAD \
-          --first-parent \
+        # Get the timestamp of the last tag (Unix epoch)
+        # This handles squash merge history by only counting commits made AFTER the release
+        LAST_TAG_DATE=$(git log -1 --format=%cI "$LAST_TAG" 2>/dev/null)
+        echo "Last tag date: $LAST_TAG_DATE"
+
+        # Get commits made AFTER the last release date
+        # This excludes commits that were part of previous releases but appear
+        # in main..develop due to squash merge breaking git ancestry
+        COMMITS=$(git log --after="$LAST_TAG_DATE" \
           --no-merges \
           --oneline \
-          --grep="^chore: sync" --invert-grep \
-          --grep="^chore(release):" --invert-grep \
-          2>/dev/null || echo "")
+          HEAD 2>/dev/null | grep -vE "^[a-f0-9]+ chore(\(.+\))?:" || echo "")
 
         if [ -z "$COMMITS" ]; then
-          echo "::warning::No meaningful commits found, using patch bump"
+          # Check if there's actually a diff between branches
+          DIFF_FILES=$(git diff --name-only origin/${{ inputs.target-branch }}..HEAD 2>/dev/null | head -5)
+          if [ -z "$DIFF_FILES" ]; then
+            echo "::error::No changes found since $LAST_TAG"
+            exit 1
+          fi
+          echo "No feature commits found but files differ. Using patch bump."
           BUMP="patch"
           PATCH=$((PATCH + 1))
         else
-          echo "Commits for version calculation:"
+          echo "Commits for version calculation (after $LAST_TAG_DATE):"
           echo "$COMMITS" | head -20
 
-          # Check for breaking changes (! suffix in type)
           if echo "$COMMITS" | grep -qE "^[a-f0-9]+ (feat|fix)(\(.+\))?!:"; then
             BUMP="major"
             MAJOR=$((MAJOR + 1))
@@ -178,28 +180,6 @@ runs:
           fi
         fi
 
-    - name: Update other version files
-      shell: bash
-      run: |
-        VERSION="${{ steps.version.outputs.version }}"
-        
-        # pyproject.toml
-        if [ -f pyproject.toml ]; then
-          sed -i "s/^version = \"[^\"]*\"/version = \"${VERSION}\"/" pyproject.toml
-        fi
-        
-        # setup.py
-        if [ -f setup.py ]; then
-          sed -i "s/version=['\"][^'\"]*['\"]/version='${VERSION}'/" setup.py
-        fi
-        
-        # composer.json
-        if [ -f composer.json ]; then
-          if command -v jq &> /dev/null; then
-            jq ".version = \"${VERSION}\"" composer.json > composer.json.tmp && mv composer.json.tmp composer.json
-          fi
-        fi
-
     - name: Commit and push changes
       shell: bash
       run: |
@@ -224,7 +204,6 @@ runs:
         BRANCH="${{ steps.branch.outputs.branch }}"
         TARGET="${{ inputs.target-branch }}"
 
-        # Create the PR
         PR_URL=$(gh pr create \
           --base "$TARGET" \
           --head "$BRANCH" \
@@ -248,7 +227,7 @@ runs:
         echo "Created PR #$PR_NUMBER: $PR_URL"
 
         # Enable auto-merge with MERGE COMMIT (not squash!)
-        # This preserves git ancestry for correct version calculation
+        # This preserves git ancestry for correct version calculation in future releases
         echo "Enabling auto-merge with merge commit strategy..."
         gh pr merge "$PR_URL" --auto --merge || {
           echo "::warning::Could not enable auto-merge. PR may need manual merge with merge commit."
