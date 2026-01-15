@@ -40,86 +40,6 @@ runs:
         git fetch --tags
         git fetch origin ${{ inputs.target-branch }}
 
-    - name: Determine version bump
-      id: version
-      shell: bash
-      run: |
-        # SemVer regex pattern (strict)
-        SEMVER_REGEX="^([0-9]+)\.([0-9]+)\.([0-9]+)(-([0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*))?(\+([0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*))?$"
-
-        # Get last tag that matches v*.*.* pattern (semantic versioning)
-        # Filter tags to only those starting with 'v' followed by a digit
-        LAST_TAG=$(git tag --list 'v[0-9]*' --sort=-v:refname | head -n1)
-
-        if [ -z "$LAST_TAG" ]; then
-          echo "::error::No semantic version tags found (expected format: v*.*.*, e.g., v1.0.0)"
-          echo "::error::Please create an initial tag with: git tag v0.0.0 && git push origin v0.0.0"
-          exit 1
-        fi
-
-        echo "Last tag: $LAST_TAG"
-
-        # Parse current version (remove 'v' prefix)
-        CURRENT_VERSION=${LAST_TAG#v}
-
-        # Validate SemVer format
-        if [[ ! "$CURRENT_VERSION" =~ $SEMVER_REGEX ]]; then
-          echo "::error::Tag '$LAST_TAG' is not a valid semantic version"
-          echo "::error::Expected format: vMAJOR.MINOR.PATCH (e.g., v1.0.0, v2.1.3)"
-          exit 1
-        fi
-
-        # Extract major, minor, patch
-        MAJOR="${BASH_REMATCH[1]}"
-        MINOR="${BASH_REMATCH[2]}"
-        PATCH="${BASH_REMATCH[3]}"
-
-        echo "Current version: $MAJOR.$MINOR.$PATCH"
-
-        # IMPORTANT: Analyze commits between target branch and current HEAD
-        # This ensures we only count NEW commits that will be included in this release,
-        # not commits that were already released in previous versions.
-        # Using origin/target-branch..HEAD instead of tag..HEAD to avoid including
-        # commits from different branch paths.
-        TARGET_BRANCH="origin/${{ inputs.target-branch }}"
-        COMMITS=$(git log ${TARGET_BRANCH}..HEAD --oneline 2>/dev/null)
-
-        if [ -z "$COMMITS" ]; then
-          echo "::error::No commits found between ${TARGET_BRANCH} and HEAD"
-          echo "::error::Nothing to release"
-          exit 1
-        fi
-
-        echo "Commits to be released (${TARGET_BRANCH}..HEAD):"
-        echo "$COMMITS" | head -20
-
-        # Check for breaking changes (! suffix or BREAKING CHANGE in body)
-        if echo "$COMMITS" | grep -qE "^[a-f0-9]+ (feat|fix)(\(.+\))?!:"; then
-          BUMP="major"
-          MAJOR=$((MAJOR + 1))
-          MINOR=0
-          PATCH=0
-        elif echo "$COMMITS" | grep -qE "^[a-f0-9]+ feat(\(.+\))?:"; then
-          BUMP="minor"
-          MINOR=$((MINOR + 1))
-          PATCH=0
-        else
-          BUMP="patch"
-          PATCH=$((PATCH + 1))
-        fi
-
-        NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
-
-        # Validate new version is also SemVer (sanity check)
-        if [[ ! "$NEW_VERSION" =~ $SEMVER_REGEX ]]; then
-          echo "::error::Generated version '$NEW_VERSION' is not valid SemVer (this is a bug)"
-          exit 1
-        fi
-
-        echo "Version bump: $BUMP ($CURRENT_VERSION -> $NEW_VERSION)"
-        echo "version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
-        echo "bump=$BUMP" >> "$GITHUB_OUTPUT"
-
     - name: Merge target branch into source
       shell: bash
       run: |
@@ -129,6 +49,78 @@ runs:
         git merge origin/${{ inputs.target-branch }} --no-edit -X ours || {
           echo "::warning::Merge had conflicts, resolved using 'ours' strategy"
         }
+
+    - name: Determine version bump
+      id: version
+      shell: bash
+      run: |
+        # SemVer regex pattern (strict)
+        SEMVER_REGEX="^([0-9]+)\.([0-9]+)\.([0-9]+)(-([0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*))?(\+([0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*))?$"
+
+        # Get last tag
+        LAST_TAG=$(git tag --list 'v[0-9]*' --sort=-v:refname | head -n1)
+
+        if [ -z "$LAST_TAG" ]; then
+          echo "::error::No semantic version tags found"
+          exit 1
+        fi
+
+        echo "Last tag: $LAST_TAG"
+
+        # Parse current version
+        CURRENT_VERSION=${LAST_TAG#v}
+
+        if [[ ! "$CURRENT_VERSION" =~ $SEMVER_REGEX ]]; then
+          echo "::error::Tag '$LAST_TAG' is not a valid semantic version"
+          exit 1
+        fi
+
+        MAJOR="${BASH_REMATCH[1]}"
+        MINOR="${BASH_REMATCH[2]}"
+        PATCH="${BASH_REMATCH[3]}"
+
+        echo "Current version: $MAJOR.$MINOR.$PATCH"
+
+        # Get commits for version calculation
+        # Use first-parent to follow the main development line
+        # Exclude merge commits and sync commits which don't represent actual changes
+        COMMITS=$(git log origin/${{ inputs.target-branch }}..HEAD \
+          --first-parent \
+          --no-merges \
+          --oneline \
+          --grep="^chore: sync" --invert-grep \
+          --grep="^chore(release):" --invert-grep \
+          2>/dev/null || echo "")
+
+        if [ -z "$COMMITS" ]; then
+          echo "::warning::No meaningful commits found, using patch bump"
+          BUMP="patch"
+          PATCH=$((PATCH + 1))
+        else
+          echo "Commits for version calculation:"
+          echo "$COMMITS" | head -20
+
+          # Check for breaking changes (! suffix in type)
+          if echo "$COMMITS" | grep -qE "^[a-f0-9]+ (feat|fix)(\(.+\))?!:"; then
+            BUMP="major"
+            MAJOR=$((MAJOR + 1))
+            MINOR=0
+            PATCH=0
+          elif echo "$COMMITS" | grep -qE "^[a-f0-9]+ feat(\(.+\))?:"; then
+            BUMP="minor"
+            MINOR=$((MINOR + 1))
+            PATCH=0
+          else
+            BUMP="patch"
+            PATCH=$((PATCH + 1))
+          fi
+        fi
+
+        NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
+
+        echo "Version bump: $BUMP ($CURRENT_VERSION -> $NEW_VERSION)"
+        echo "version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+        echo "bump=$BUMP" >> "$GITHUB_OUTPUT"
 
     - name: Create release branch
       id: branch
@@ -144,7 +136,6 @@ runs:
       run: |
         if ! command -v git-cliff &> /dev/null; then
           cargo install git-cliff --locked || {
-            # Fallback: download pre-built binary
             curl -sSL https://github.com/orhun/git-cliff/releases/latest/download/git-cliff-x86_64-unknown-linux-gnu.tar.gz | tar xz
             sudo mv git-cliff /usr/local/bin/
           }
@@ -157,7 +148,6 @@ runs:
         if [ -f cliff.toml ]; then
           git-cliff --tag "v${VERSION}" -o CHANGELOG.md
         else
-          # Fallback: simple changelog generation
           echo "# Changelog" > CHANGELOG.md
           echo "" >> CHANGELOG.md
           echo "## v${VERSION}" >> CHANGELOG.md
@@ -188,128 +178,26 @@ runs:
           fi
         fi
 
-    - name: Update pyproject.toml version (Python)
+    - name: Update other version files
       shell: bash
       run: |
         VERSION="${{ steps.version.outputs.version }}"
+        
+        # pyproject.toml
         if [ -f pyproject.toml ]; then
-          echo "Updating pyproject.toml to version ${VERSION}"
-          # Handle both [project] and [tool.poetry] sections
           sed -i "s/^version = \"[^\"]*\"/version = \"${VERSION}\"/" pyproject.toml
         fi
-
-    - name: Update setup.py version (Python legacy)
-      shell: bash
-      run: |
-        VERSION="${{ steps.version.outputs.version }}"
+        
+        # setup.py
         if [ -f setup.py ]; then
-          echo "Updating setup.py to version ${VERSION}"
           sed -i "s/version=['\"][^'\"]*['\"]/version='${VERSION}'/" setup.py
         fi
-
-    - name: Update composer.json version (PHP)
-      shell: bash
-      run: |
-        VERSION="${{ steps.version.outputs.version }}"
+        
+        # composer.json
         if [ -f composer.json ]; then
-          echo "Updating composer.json to version ${VERSION}"
           if command -v jq &> /dev/null; then
             jq ".version = \"${VERSION}\"" composer.json > composer.json.tmp && mv composer.json.tmp composer.json
-          else
-            sed -i "s/\"version\": \"[^\"]*\"/\"version\": \"${VERSION}\"/" composer.json
           fi
-        fi
-
-    - name: Update pubspec.yaml version (Dart/Flutter)
-      shell: bash
-      run: |
-        VERSION="${{ steps.version.outputs.version }}"
-        if [ -f pubspec.yaml ]; then
-          echo "Updating pubspec.yaml to version ${VERSION}"
-          sed -i "s/^version: .*/version: ${VERSION}/" pubspec.yaml
-        fi
-
-    - name: Update version.rb (Ruby)
-      shell: bash
-      run: |
-        VERSION="${{ steps.version.outputs.version }}"
-        # Find and update version.rb files
-        for file in $(find . -name "version.rb" -type f 2>/dev/null | head -5); do
-          echo "Updating ${file} to version ${VERSION}"
-          sed -i "s/VERSION = ['\"][^'\"]*['\"]/VERSION = '${VERSION}'/" "$file"
-        done
-
-    - name: Update gemspec version (Ruby)
-      shell: bash
-      run: |
-        VERSION="${{ steps.version.outputs.version }}"
-        for file in *.gemspec; do
-          if [ -f "$file" ]; then
-            echo "Updating ${file} to version ${VERSION}"
-            sed -i "s/\.version\s*=\s*['\"][^'\"]*['\"]/.version = '${VERSION}'/" "$file"
-          fi
-        done
-
-    - name: Update pom.xml version (Java/Maven)
-      shell: bash
-      run: |
-        VERSION="${{ steps.version.outputs.version }}"
-        if [ -f pom.xml ]; then
-          echo "Updating pom.xml to version ${VERSION}"
-          # Update only the project version, not dependency versions
-          sed -i "0,/<version>[^<]*<\/version>/s/<version>[^<]*<\/version>/<version>${VERSION}<\/version>/" pom.xml
-        fi
-
-    - name: Update build.gradle version (Gradle)
-      shell: bash
-      run: |
-        VERSION="${{ steps.version.outputs.version }}"
-        if [ -f build.gradle ]; then
-          echo "Updating build.gradle to version ${VERSION}"
-          sed -i "s/version = ['\"][^'\"]*['\"]/version = '${VERSION}'/" build.gradle
-        fi
-        if [ -f build.gradle.kts ]; then
-          echo "Updating build.gradle.kts to version ${VERSION}"
-          sed -i "s/version = \"[^\"]*\"/version = \"${VERSION}\"/" build.gradle.kts
-        fi
-
-    - name: Update Package.swift version (Swift)
-      shell: bash
-      run: |
-        VERSION="${{ steps.version.outputs.version }}"
-        if [ -f Package.swift ]; then
-          echo "Updating Package.swift to version ${VERSION}"
-          # Update version in package definition if present
-          sed -i "s/version: \"[^\"]*\"/version: \"${VERSION}\"/" Package.swift
-        fi
-
-    - name: Update .csproj version (.NET/C#)
-      shell: bash
-      run: |
-        VERSION="${{ steps.version.outputs.version }}"
-        # Update Directory.Build.props if exists (central version management)
-        if [ -f Directory.Build.props ]; then
-          echo "Updating Directory.Build.props to version ${VERSION}"
-          sed -i "s/<Version>[^<]*<\/Version>/<Version>${VERSION}<\/Version>/" Directory.Build.props
-          sed -i "s/<PackageVersion>[^<]*<\/PackageVersion>/<PackageVersion>${VERSION}<\/PackageVersion>/" Directory.Build.props
-        fi
-        # Update individual .csproj files
-        for file in *.csproj; do
-          if [ -f "$file" ]; then
-            echo "Updating ${file} to version ${VERSION}"
-            sed -i "s/<Version>[^<]*<\/Version>/<Version>${VERSION}<\/Version>/" "$file"
-            sed -i "s/<PackageVersion>[^<]*<\/PackageVersion>/<PackageVersion>${VERSION}<\/PackageVersion>/" "$file"
-          fi
-        done
-
-    - name: Update Chart.yaml version (Helm)
-      shell: bash
-      run: |
-        VERSION="${{ steps.version.outputs.version }}"
-        if [ -f Chart.yaml ]; then
-          echo "Updating Chart.yaml to version ${VERSION}"
-          sed -i "s/^version: .*/version: ${VERSION}/" Chart.yaml
-          sed -i "s/^appVersion: .*/appVersion: \"${VERSION}\"/" Chart.yaml
         fi
 
     - name: Commit and push changes
@@ -326,7 +214,7 @@ runs:
 
         git push origin "$BRANCH"
 
-    - name: Create Pull Request
+    - name: Create Pull Request with merge commit auto-merge
       id: create-pr
       shell: bash
       env:
@@ -336,6 +224,7 @@ runs:
         BRANCH="${{ steps.branch.outputs.branch }}"
         TARGET="${{ inputs.target-branch }}"
 
+        # Create the PR
         PR_URL=$(gh pr create \
           --base "$TARGET" \
           --head "$BRANCH" \
@@ -357,3 +246,10 @@ runs:
         echo "pr-url=$PR_URL" >> "$GITHUB_OUTPUT"
         echo "pr-number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
         echo "Created PR #$PR_NUMBER: $PR_URL"
+
+        # Enable auto-merge with MERGE COMMIT (not squash!)
+        # This preserves git ancestry for correct version calculation
+        echo "Enabling auto-merge with merge commit strategy..."
+        gh pr merge "$PR_URL" --auto --merge || {
+          echo "::warning::Could not enable auto-merge. PR may need manual merge with merge commit."
+        }
