@@ -40,16 +40,6 @@ runs:
         git fetch --tags
         git fetch origin ${{ inputs.target-branch }}
 
-    - name: Merge target branch into source
-      shell: bash
-      run: |
-        # Merge target branch (e.g., main) into source branch (e.g., develop)
-        # This ensures CHANGELOG and version files are up-to-date with the latest release
-        echo "Merging ${{ inputs.target-branch }} into current branch to sync release artifacts..."
-        git merge origin/${{ inputs.target-branch }} --no-edit -X ours || {
-          echo "::warning::Merge had conflicts, resolved using 'ours' strategy"
-        }
-
     - name: Determine version bump
       id: version
       shell: bash
@@ -86,19 +76,25 @@ runs:
 
         echo "Current version: $MAJOR.$MINOR.$PATCH"
 
-        # Analyze commits for version bump type
-        COMMITS=$(git log ${LAST_TAG}..HEAD --oneline 2>/dev/null || git log HEAD --oneline)
+        # IMPORTANT: Analyze commits between target branch and current HEAD
+        # This ensures we only count NEW commits that will be included in this release,
+        # not commits that were already released in previous versions.
+        # Using origin/target-branch..HEAD instead of tag..HEAD to avoid including
+        # commits from different branch paths.
+        TARGET_BRANCH="origin/${{ inputs.target-branch }}"
+        COMMITS=$(git log ${TARGET_BRANCH}..HEAD --oneline 2>/dev/null)
 
         if [ -z "$COMMITS" ]; then
-          echo "::error::No commits found since $LAST_TAG"
+          echo "::error::No commits found between ${TARGET_BRANCH} and HEAD"
           echo "::error::Nothing to release"
           exit 1
         fi
 
-        echo "Commits since $LAST_TAG:"
-        echo "$COMMITS" | head -10
+        echo "Commits to be released (${TARGET_BRANCH}..HEAD):"
+        echo "$COMMITS" | head -20
 
-        if echo "$COMMITS" | grep -qE "(feat|fix)(\(.+\))?!:|BREAKING CHANGE:"; then
+        # Check for breaking changes (! suffix or BREAKING CHANGE in body)
+        if echo "$COMMITS" | grep -qE "^[a-f0-9]+ (feat|fix)(\(.+\))?!:"; then
           BUMP="major"
           MAJOR=$((MAJOR + 1))
           MINOR=0
@@ -123,6 +119,16 @@ runs:
         echo "Version bump: $BUMP ($CURRENT_VERSION -> $NEW_VERSION)"
         echo "version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
         echo "bump=$BUMP" >> "$GITHUB_OUTPUT"
+
+    - name: Merge target branch into source
+      shell: bash
+      run: |
+        # Merge target branch (e.g., main) into source branch (e.g., develop)
+        # This ensures CHANGELOG and version files are up-to-date with the latest release
+        echo "Merging ${{ inputs.target-branch }} into current branch to sync release artifacts..."
+        git merge origin/${{ inputs.target-branch }} --no-edit -X ours || {
+          echo "::warning::Merge had conflicts, resolved using 'ours' strategy"
+        }
 
     - name: Create release branch
       id: branch
